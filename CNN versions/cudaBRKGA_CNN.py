@@ -1,236 +1,144 @@
-from dataclasses import dataclass
-
-import numpy as np
-
-# from pyasn1.type.univ import Any
-from typing import Any
-
-# Carregando todas as bibliotecas necessárias
-import torch
-import torch.nn.functional as F
-from torch import nn, optim
-from torchvision import datasets, transforms
-
-from keras.datasets import mnist  # MNIST dataset is included in Keras
-
-from time import time
-from sklearn.model_selection import train_test_split
-import torch.utils.data as data_utils
-
-from random import random, randint
-import math
-import copy
-import os
-import numpy as np
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using PyTorch version:", torch.__version__, " Device:", device)
-
-# Use standard MNIST dataset
-(xtrain, y_train), (xtest, ytest) = mnist.load_data()
-
-x_train = [item.reshape(1, 28 * 28) for item in xtrain]
-X_train = [x_train[n][0] for n in range(len(x_train))]
-x_test = [item.reshape(1, 28 * 28) for item in xtest]
-X_test = [x_test[n][0] for n in range(len(x_test))]
-
-x_train = np.array(X_train)
-X_test = np.array(X_test)
-
-x_valid, x_test, y_valid, y_test = train_test_split(
-    X_test, ytest, test_size=0.10, random_state=1
-)
-
-
-# # CONVERTING THE DATA TO TENSORS
-input_shape = (1, 28, 28)
-batch_size = 100
-
-x_train = x_train.reshape(x_train.shape[0], *input_shape)
-x_valid = x_valid.reshape(x_valid.shape[0], *input_shape)
-x_test = x_test.reshape(x_test.shape[0], *input_shape)
-
-x_train = torch.stack([torch.from_numpy(np.array(i)) for i in x_train])
-print(x_train.shape)
-x_valid = torch.stack([torch.from_numpy(np.array(i)) for i in x_valid])
-print(x_valid.shape)
-x_test = torch.stack([torch.from_numpy(np.array(i)) for i in x_test])
-print(x_test.shape)
-
-y_train = torch.stack([torch.from_numpy(np.array(i)) for i in y_train])
-print(y_train.shape)
-y_valid = torch.stack([torch.from_numpy(np.array(i)) for i in y_valid])
-print(y_valid.shape)
-y_test = torch.stack([torch.from_numpy(np.array(i)) for i in y_test])
-print(y_test.shape)
-
-train_set = torch.utils.data.TensorDataset(x_train, y_train)
-valid_set = torch.utils.data.TensorDataset(x_valid, y_valid)
-test_set = torch.utils.data.TensorDataset(x_test, y_test)
-
-train_loader = torch.utils.data.DataLoader(
-    train_set, batch_size=batch_size, shuffle=True, num_workers=0
-)
-val_loader = torch.utils.data.DataLoader(
-    valid_set, batch_size=batch_size, shuffle=True, num_workers=0
-)
-test_loader = torch.utils.data.DataLoader(
-    test_set, batch_size=batch_size, shuffle=False, num_workers=0
-)
-
-
-import brkga
-
-
 def seed_everything(seed=1062):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  torch.cuda.manual_seed(seed)
+  torch.backends.cudnn.deterministic = True
+  torch.backends.cudnn.benchmark = False
 
 
-def decoder(ind, MaxConv, MaxLinear):
-    seed_everything(2022)
-    model_cnn, model_linear = [], []
-    auxModel_cnn = createNetConv(model_cnn, ind.genes[0], MaxConv)
-    auxModel_linear = createNetLinear(model_linear, ind.genes[1], MaxLinear)
-    sequential = Model(auxModel_cnn, auxModel_linear)
-    ind.model = sequential
-    sequential.to(device)
-    print("Decoder:", sequential)
+# Functions and classes for the BRKGA-CNN
+def createSolutionConv(in_feat, ConvLayer, genes, device):
+    solConv = torch.zeros(8*ConvLayer, dtype=int, device=device) # Insert convolutional Layers
 
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(sequential.parameters(), lr=1e-2)
+    for i in range(0, ConvLayer):
 
-    # Creating the tensors
-    batch_size = 100
-    train_loader = torch.utils.data.DataLoader(
-        train_set, batch_size=batch_size, shuffle=True, num_workers=0
-    )
-    val_loader = torch.utils.data.DataLoader(
-        valid_set, batch_size=batch_size, shuffle=True, num_workers=0
-    )
+      D_out = torch.round(genes[6*i]*20)
+      if D_out == 0:
+        D_out = 1
+      kernel_size = torch.round(genes[6*i+1]*D_out) if D_out <= 7 else torch.round(genes[6*i+1]*7)
+      if kernel_size == 0:
+        kernel_size = 1
+      stride = 1 if genes[6*i+2] <= 0.5 else 2
+      
+      # Convolutional Layer
+      solConv[8*i+0] = in_feat if i==0 else solConv[8*(i-1)+1]
+      solConv[8*i+1] = D_out
+      solConv[8*i+2] = kernel_size
+      solConv[8*i+3] = stride
+      # Batch Normalization
+      if genes[6*i+3] <= 0.5:
+        solConv[8*i+4] = D_out
+      else:
+        solConv[8*i+4] = 0
+      # Max-Pooling
+      if genes[6*i+4] <= 0.5:
+        solConv[8*i+5] = kernel_size
+        solConv[8*i+6] = stride
+      else:
+        solConv[8*i+5] = 0
+        solConv[8*i+6] = 0
+      # Activation Function for Convolutional Layer
+      solConv[8*i+7] = torch.round(16 * genes[6*i+5])
 
-    loss_train = []
-    for t in range(30):
-        for inputs, targets in train_loader:
-            x_train, y_train = inputs.to(device), targets.to(device)
-            optimizer.zero_grad()  # Resetting the gradients due to the previous cycle
-            y_pred = sequential.forward(
-                x_train.float()
-            )  # Forward pass: compute predicted y by passing x to the model
-            y_train = torch.tensor(y_train, dtype=torch.long)
-            loss = loss_fn(y_pred, y_train)  # Compute loss
-            loss_train.append(loss.cpu().detach().item())
-            loss.backward(
-                retain_graph=True
-            )  # Backward pass: compute gradient of the loss with respect to model parameters
-            optimizer.step()  # Calling the step function on an Optimizer makes an update to its parameters
+    return solConv # np.array(solConv, dtype=int)
 
-    correct, total = 0, 0
-    with torch.no_grad():
-        for inputs, targets in val_loader:
-            images, labels = inputs.to(device), targets.to(device)
-            Y_pred = sequential.forward(images.float())
-            labels = torch.tensor(labels, dtype=torch.long)
-            _, predicted = torch.max(Y_pred.data, 1)
-            predicted = predicted.cpu()
-            total += labels.size(0)
-            correct += (predicted == targets).sum().item()
-        results_valid = 100.0 * (correct / total)
+def createSolutionLinear(in_feat, D_out, LinearLayer, genes, device):
+    solLinear = torch.zeros(4*LinearLayer, dtype=int, device=device)     # Insert Linear Layers    
+    
+    for i in range(0, LinearLayer):
+      # Linear layer input
+      solLinear[4*i] = in_feat if i==0 else solLinear[4*(i-1)+1]
+      # Linear layer output
+      solLinear[4*i+1] = torch.round(genes[3*i] * (solLinear[4*i] - D_out) + D_out)
+      # Bias: on (True) or off (False)
+      solLinear[4*i+2] = torch.round(genes[3*i+1])
+      # Activation function for Linear Layer
+      solLinear[4*i+3] = torch.round(16 * genes[3*i+2])
 
-    # valid_error = 100 - results_valid      #train_average = np.mean(loss_train)
-    print("Error:", 100 - results_valid, "Loss:", np.mean(loss_train))
-    print()
-    ind.fitness, ind.loss = 100 - results_valid, np.mean(loss_train)
-    return ind
+    return solLinear # np.array(solLinear, dtype=int)
 
 
-# Functions and Classes for BRKGA-CNN
-def createIndividualCNN(
-    in_feat, N
-):  # , conv_previous - Na verdade, 'al' é pra ser igual ao número de camadas ocultas para camadas lineares
-    chromossome = [random() for i in range(0, 4 * N)]  # Insert Convolutional Layers
+def createNetConv(solConv, MaxConv):
+  auxModel = []
+  for i in range(0, MaxConv):
+    chromo = solConv[8*i:(8*i)+8]
+    auxModel.append(nn.Conv2d(in_channels=chromo[0],
+                              out_channels=chromo[1],
+                              kernel_size=(chromo[2], chromo[2]),
+                              stride=(chromo[3], chromo[3]), padding=1))
+    if chromo[4] != 0:
+      auxModel.append(nn.BatchNorm2d(chromo[4]))
+    if chromo[5] != 0:
+      auxModel.append(nn.MaxPool2d(kernel_size=chromo[5],
+                                   stride=(chromo[6], chromo[6]))) # chromo[5:7] torch.max_pool2d
+    auxModel.append(NonLinearActivation(chromo[7]))
+  return auxModel
 
-    stride = 1 if chromossome[0] < 0.5 else 2
-    D_out_1 = math.floor(chromossome[0] * 10)
-    D_out = D_out_1 if D_out_1 > 0 else 1
-    chromossome[0] = [
-        in_feat,
-        D_out,
-        randint(1, 5),
-        stride,
-        (1, 1),
-    ]  # Convolutional Layer
-    chromossome[1] = D_out if chromossome[1] >= 0.5 else None  # Batch Normalization
-    chromossome[2] = (
-        [randint(1, 5), (stride, stride)] if chromossome[2] >= 0.5 else None
-    )  # Max-Pooling random.randint(1, 2), (1, 1)
-    chromossome[3] = randint(0, 16)  # Activation Function for Convolutional Layer
+def createNetLinear(solLinear, MaxLinear):
+  auxModel = []
+  for i in range(0, MaxLinear):
+      auxModel.append(nn.Linear(in_features=solLinear[4*i],
+                                out_features=solLinear[4*i+1],
+                                bias=solLinear[4*i+2]
+                                )
+                      )
+      auxModel.append(NonLinearActivation(solLinear[4*i+3]))    
+  auxModel.append(nn.Linear(in_features=solLinear[-3], out_features=D_out, bias=True))
+  return auxModel
 
-    if N > 1:
-        for i in range(1, N):
-            stride = 1 if chromossome[4 * i] < 0.5 else 2
-            D_out_1 = math.floor(chromossome[4 * i] * 10)
-            D_out = D_out_1 if D_out_1 > 0 else 1
-            chromossome[4 * i] = [
-                chromossome[4 * (i - 1)][1],
-                D_out,
-                randint(1, 5),
-                stride,
-                (1, 1),
-            ]  # Convolutional Layer
-            chromossome[4 * i + 1] = (
-                D_out if chromossome[4 * i + 1] >= 0.5 else None
-            )  # Batch Normalization
-            chromossome[4 * i + 2] = (
-                [randint(1, 5), (stride, stride)]
-                if chromossome[4 * i + 2] >= 0.5
-                else None
-            )  # Max-Pooling random.randint(1, 2), (1, 1)
-            chromossome[4 * i + 3] = randint(
-                0, 16
-            )  # Activation Function for Convolutional Layer
-    return chromossome
+class Model_cnn(torch.nn.Module):
+  def __init__(self, model):
+    super(Model_cnn, self).__init__()  
+    self.layers_cnn = nn.Sequential(*model)
+
+  def forward(self, x):
+    x = self.layers_cnn(x)
+    x = x.reshape(x.size(0), -1)
+    return x.shape
 
 
-def createIndividualLinear(D_out, N, in_feat=None):  # model
-    chromo_linear = 4 * N * [None]  # Insert Linear Layers
-    chromo_linear[0] = in_feat  # Linear layer input
-    if in_feat >= D_out:
-        chromo_linear[1] = randint(D_out, in_feat)
+class Model(torch.nn.Module):
+  def __init__(self, cnn, fc):
+    super(Model, self).__init__()
+    self.layers_cnn = nn.Sequential(*cnn)
+    self.layers_linear = nn.Sequential(*fc)
+  
+  def forward(self, x):
+    x = self.layers_cnn(x)
+    x = x.reshape(x.size(0), -1)
+    x = self.layers_linear(x)
+    return nn.functional.log_softmax(x, dim=1) # nn.functional.log_softmax(self.layers_linear(x), dim=1) # self.fout(x)  # torch.sigmoid(self.fout(x))
+
+def train_cnn(solConv, val_loader, ConvLayer):
+  '''
+  The function is responsible for training only the convolutional layers
+  to determine how many output channels of the last layer will be used
+  to represent the input of neurons in the linear layer. 
+  '''
+  auxModel = createNetConv(solConv.tolist(), ConvLayer)
+  # seed_everything(seed=2022)
+  
+  modelo_cnn = Model_cnn(auxModel)
+  # print("Model CNN:", modelo_cnn)
+  modelo_cnn.to(device)
+  modelo_cnn.train()
+  for i, (images, labels) in enumerate(val_loader):
+    if i == 0:
+      img = images.to(device)
+      outputs = modelo_cnn.forward(img.float())
     else:
-        chromo_linear[1] = D_out  # Linear layer output
-    chromo_linear[2] = (
-        True if random() >= 0.5 else False
-    )  # Bias on (True) or off (False)
-    chromo_linear[3] = randint(0, 16)  # Activation function
-
-    if N > 1:  # Se existir mais de uma camada linear
-        for i in range(1, N):
-            chromo_linear[4 * i] = chromo_linear[4 * (i - 1) + 1]  # Linear layer input
-            chromo_linear[4 * i + 1] = (
-                randint(D_out, chromo_linear[4 * i])
-                if chromo_linear[4 * i] < D_out
-                else D_out
-            )  # Linear layer output
-            chromo_linear[4 * i + 2] = (
-                True if random() >= 0.5 else False
-            )  # Bias on (True) or off (False)
-            chromo_linear[4 * i + 3] = randint(0, 16)  # Activation function
-    return chromo_linear
+      break
+  #print("Input of Layer Linear:", outputs[1])
+  return outputs[1]
 
 
 def NonLinearActivation(number):
     if number == 0:
-        return torch.nn.ELU(alpha=1.0, inplace=False)
+        return torch.nn.Sigmoid()
     elif number == 1:
         return torch.nn.Hardshrink(lambd=0.5)
     elif number == 2:
-        return torch.nn.Hardtanh(
-            min_val=-1.0, max_val=1.0, inplace=False, min_value=None, max_value=None
-        )
+        return torch.nn.Hardtanh(min_val=-1.0, max_val=1.0, inplace=False, min_value=None, max_value=None)
     elif number == 3:
         return torch.nn.LeakyReLU(negative_slope=0.01, inplace=False)
     elif number == 4:
@@ -242,7 +150,7 @@ def NonLinearActivation(number):
     elif number == 7:
         return torch.nn.ReLU(inplace=False)
     elif number == 8:
-        return torch.nn.RReLU(lower=0.125, upper=0.34, inplace=False)
+        return torch.nn.RReLU(lower=0.125, upper=0.3333333333333333, inplace=False)
     elif number == 9:
         return torch.nn.ReLU6(inplace=False)
     elif number == 10:
@@ -250,7 +158,7 @@ def NonLinearActivation(number):
     elif number == 11:
         return torch.nn.CELU(alpha=1.0, inplace=False)
     elif number == 12:
-        return torch.nn.Sigmoid()
+        return torch.nn.ELU(alpha=1.0, inplace=False)
     elif number == 13:
         return torch.nn.Softplus(beta=1, threshold=20)
     elif number == 14:
@@ -259,187 +167,192 @@ def NonLinearActivation(number):
         return torch.nn.Softsign()
     elif number == 16:
         return torch.nn.Tanh()
-    elif number == 17:
-        return torch.nn.functional.log_softmax()
+
+def train_model(solution, ConvLayer, LinearLayer, trained_models, initial_seed):
+
+    auxModel_cnn = createNetConv(solution[0], ConvLayer)
+    auxModel_linear = createNetLinear(solution[1], LinearLayer)
+  
+    if (str(solution)) in trained_models:
+        return [auxModel_cnn, auxModel_linear], trained_models[str(solution)], trained_models
+    else:
+
+      seed_everything(initial_seed)
+      sequential = Model(auxModel_cnn, auxModel_linear)
+      
+      sequential.to(device)
+      # print("Decoder:", sequential)
+
+      loss_fn = nn.CrossEntropyLoss()
+      optimizer = torch.optim.Adam(sequential.parameters(), lr=1e-2)
+      
+      # Creating the tensors
+      train_loader = torch.utils.data.DataLoader(train_set, batch_size=100, shuffle=True) #, num_workers=0)
+      val_loader = torch.utils.data.DataLoader(valid_set, batch_size=100, shuffle=True) #, num_workers=0)
+      
+      results_valid = []
+      for epoch in range(20):
+        for inputs, targets in train_loader:
+          x_train, y_train = inputs.to(device), targets.to(device)
+          
+          optimizer.zero_grad()                               # Resetting the gradients due to the previous cycle
+          y_pred = sequential.forward(x_train.float())        # Forward pass: compute predicted y by passing x to the model
+          # y_train = torch.tensor(y_train, dtype=torch.long)   # sourceTensor.clone().detach()
+          loss = loss_fn(y_pred, y_train)                     # Compute loss
+          loss.backward(retain_graph=True)                    # Backward pass: compute gradient of the loss with respect to model parameters
+          optimizer.step()                                    # Calling the step function on an Optimizer makes an update to its parameters
+
+        correct, total = 0, 0
+        with torch.no_grad():
+          for inputs, targets in val_loader:
+            images, labels = inputs.to(device), targets.to(device)
+            Y_pred = sequential.forward(images.float())
+            # labels = torch.tensor(labels, dtype=torch.long)   # sourceTensor.clone().detach()
+            _, predicted = torch.max(Y_pred.data, 1)
+            predicted = predicted.cpu()
+            total += labels.size(0)
+            correct += (predicted == targets).sum().item()
+          results_valid.append(100.0 * (correct / total))
+      
+      error_valid = 100 - np.max(results_valid)
+      
+      # print(f"Error: {100-results_valid} \n")
+      trained_models[str(solution)] = error_valid # 100-results_valid
+      return [auxModel_cnn, auxModel_linear], error_valid, trained_models
 
 
-def createNetConv(model, chromossome, MaxConv):
-    auxModel = list.copy(model)
-    for i in range(0, MaxConv):
-        auxModel.append(nn.Conv2d(*chromossome[4 * i]))
-        if chromossome[4 * i + 1]:
-            auxModel.append(nn.BatchNorm2d(chromossome[4 * i + 1]))
-        if chromossome[4 * i + 2]:
-            auxModel.append(nn.MaxPool2d(*chromossome[4 * i + 2]))  # torch.max_pool2d
-        auxModel.append(NonLinearActivation(chromossome[4 * i + 3]))
-    return auxModel
+def test_model(best_model, seed): # train_loader, validation_loader, test_loader, 
+  seed_everything(seed)
 
+  sequential = Model(best_model[0], best_model[1])
+  sequential.to(device) # CUDA
+  
+  loss_fn = torch.nn.CrossEntropyLoss()
+  optimizer = torch.optim.Adam(sequential.parameters(), lr=1e-2)
+  
+  # Creating the tensors
+  train_loader = data_utils.DataLoader(train_set, batch_size=100, shuffle=True) #, num_workers=0) # Cria um buffer para pegar os dados por partes
+  validation_loader = data_utils.DataLoader(valid_set, batch_size=100, shuffle=True) #, num_workers=0) # Cria um buffer para pegar os dados por partes
+  test_loader = data_utils.DataLoader(test_set, batch_size=100, shuffle=True) #, num_workers=0) # Cria um buffer para pegar os dados por partes
 
-def createNetLinear(model, chromo_linear, N):  # ACHO QUE O PROBLEMA ESTÁ AQUI
-    auxModel = list.copy(model)
-    for i in range(0, N - 1):
-        auxModel.append(nn.Linear(*chromo_linear[4 * i : 4 * i + 3]))
-        auxModel.append(NonLinearActivation(chromo_linear[4 * i + 3]))
-        auxModel.append(nn.Linear(chromo_linear[4 * i + 1], D_out, True))
-    return auxModel
+  train_acc, valid_acc, test_acc = [], [], []
 
+  for epoch in range(200):
+    for inputs, targets in train_loader:
+      x_train, y_train = inputs.to(device), targets.to(device)
+      
+      optimizer.zero_grad()               # Resetting the gradients due to the previous cycle
+      y_pred = sequential.forward(x_train.float())        # Forward pass: compute predicted y by passing x to the model
+      loss = loss_fn(y_pred, y_train)     # Compute loss
+      loss.backward(retain_graph=True)    # Backward pass: compute gradient of the loss with respect to model parameters
+      optimizer.step()                    # Calling the step function on an Optimizer makes an update to its parameters
 
-class Model_cnn(torch.nn.Module):
-    def __init__(self, model):
-        super(Model_cnn, self).__init__()
-        self.layers_cnn = nn.Sequential(*model)
+    # Testing Train Dataset
+    correct, total = 0, 0
+    with torch.no_grad(): # Put all torch.no_grad requires in false
+      for inputs, targets in train_loader:
+        Y_pred = sequential.forward(inputs.to(device).float())
+        _, predicted = torch.max(Y_pred.data, 1)
+        predicted = predicted.cpu()
+        total += targets.size(0)
+        correct += (predicted == targets).sum().item()
+      train_acc.append(100.0 * (correct / total))
 
-    def forward(self, x):
-        x = self.layers_cnn(x)
-        x = x.reshape(x.size(0), -1)
-        return x.shape
+    # Testing Validation Dataset
+    correct, total = 0, 0
+    with torch.no_grad(): # Put all torch.no_grad requires in false
+      for inputs, targets in validation_loader:
+        Y_pred = sequential.forward(inputs.to(device).float())
+        _, predicted = torch.max(Y_pred.data, 1)
+        predicted = predicted.cpu()
+        total += targets.size(0)
+        correct += (predicted == targets).sum().item()
+      valid_acc.append(100.0 * (correct / total))
 
+    # Testing Test Dataset
+    correct, total = 0, 0
+    with torch.no_grad(): # Put all torch.no_grad requires in false
+      for inputs, targets in test_loader:
+        Y_pred = sequential.forward(inputs.to(device).float())
+        _, predicted = torch.max(Y_pred.data, 1)
+        predicted = predicted.cpu()
+        total += targets.size(0)
+        correct += (predicted == targets).sum().item()
+      test_acc.append(100.0 * (correct / total))
+  
+  train_error = 100 - np.max(train_acc)
+  valid_error = 100 - np.max(valid_acc)
+  test_error = 100 - np.max(test_acc)
+  print(f"Error: \nTrain: {np.round(train_error, 4)} - Valid: {np.round(valid_error,4)} - Test:{np.round(test_error, 4)}")
+  return train_error, valid_error, test_error
 
-def train_cnn(chromossome, val_loader, MaxConv):
-    """
-  The function is responsible for training only the convolutional layers
-  to determine how many output channels of the last layer will be used
-  to represent the input of neurons in the linear layer. 
-  """
-    model = []
-    auxModel = createNetConv(model, chromossome, MaxConv)
-    seed_everything(seed=2022)
-    modelo_cnn = Model_cnn(auxModel)
-    modelo_cnn.to(device)
-    modelo_cnn.train()
-    for i, (images, labels) in enumerate(val_loader):
-        if i == 0:
-            img = images.to(device)
-            outputs = modelo_cnn.forward(img.float())
-        else:
+def individualCorrection(solConv, val_loader, layer):
+    error1 = 'Given input size:'
+    error2 = 'Calculated padded input size per channel:'
+    last_layer = False
+    for index in range(layer-1, -1, -1):
+        try:
+            in_f = train_cnn(solConv, val_loader, layer)
+            return in_f
             break
-    # print("Input of Layer Linear:", outputs[1])
-    return outputs[1]
+        except RuntimeError as err:
+          err = str(err)
+          # print("\nError:", err)
+          
+          if err[:17] == error1:
+              for index1 in range(layer-1, -1, -1):
+                  if solConv[8*index1+5] != 0:
+                      # print("Erro do Max-Pooling:")
+                      solConv[8*index1+5] = 0
+                      solConv[8*index1+6] = 0
+                      # print("Changed SolConv:", solConv)
 
+                      try:
+                          in_f = train_cnn(solConv, val_loader, layer)
+                          return in_f
+                          break
+                      except:
+                          pass
+              
+          elif err[:41] == error2 and last_layer==False:
+              # print("Erro do kernel size greather output channel:")
+              #print(f"Output Channel: {err[43]} - Kernel size: {err[65]}")
+              #out_channel = int(err[43])
+              #kernel_size = int(err[65])
+              for i in range(0, layer):
+                  if  solConv[8*i+1] <= solConv[8*i+2]:
+                      # print(solConv[8*i+1], solConv[8*i+2])
+                      if solConv[8*i+1] > 1:
+                          solConv[8*i+2] = torch.randint(1, solConv[8*i+1], (1,))
+                      else:
+                          solConv[8*i+2] = 1
+                      # print("Solução modificada pelo kernel size:", solConv)
+                  elif i == layer-1:
+                      solConv[8*i+2] = torch.tensor([1])
+              last_layer=True
 
-class Model(torch.nn.Module):
-    def __init__(self, cnn, fc):
-        super(Model, self).__init__()
-        self.layers_cnn = nn.Sequential(*cnn)
-        self.layers_linear = nn.Sequential(*fc)
+          elif err[:41] == error2 and last_layer==True:
+              # print("Erro de kernel size com problema de Max-Pooling:")
+              for index2 in range(layer-1, -1, -1):
 
-    def forward(self, x):
-        x = self.layers_cnn(x)
-        x = x.reshape(x.size(0), -1)
-        x = self.layers_linear(x)
-        return nn.functional.log_softmax(
-            x, dim=1
-        )  # nn.functional.log_softmax(self.layers_linear(x), dim=1) # self.fout(x)  # torch.sigmoid(self.fout(x))
+                  if solConv[8*index2+2] == int(err[65]):
+                      # print("Corrigindo o kernel com o valor da input channel:")
+                      solConv[8*index2+2] = int(err[43])
 
+                  if solConv[8*index2+5] != 0:
+                      solConv[8*index2+5] = 0
+                      solConv[8*index2+6] = 0
+                      try:
+                          in_f = train_cnn(solConv, val_loader, layer)
+                          return in_f
+                          break
+                      except:
+                          pass
+                      # print("Changed SolConv:", solConv)
+          else:
+            print("\nErro não solucionável!")
+            return False
 
-class Individual:
-    def __init__(self, list_cnn, list_linear):
-        self.genes = [list_cnn, list_linear]
-        self.fitness = None
-        self.loss = None
+    in_f = train_cnn(solConv, val_loader, layer)
+    return in_f
 
-
-def createIndividual(in_feat_cnn, D_out, MaxLinear, MaxConv, Size):
-    """
-  The function is responsible for randomly creating i individuals (based on size)
-  containing convolutional and linear layers separated by a simple list.
-  """
-    list_individuals = [None for i in range(Size)]
-    for i in range(0, Size):
-        model = []
-        lista_conv = createIndividualCNN(
-            in_feat_cnn, MaxConv
-        )  # Criar um cromossomo com genes convolucionais aleatórios
-        in_f = train_cnn(
-            lista_conv, val_loader, MaxConv
-        )  # Treinar a rede convolucional para saber a saída da última camada para ser a entrada da camada linear
-        lista_linear = createIndividualLinear(
-            D_out, MaxLinear, in_feat=in_f
-        )  # Criar um cromossomo com genes lineares, a partir da última camada convol.
-        # print(lista_conv, lista_linear)
-        list_individuals[i] = Individual(lista_conv, lista_linear)
-    return list_individuals
-
-
-@dataclass
-class CNNIndividual(brkga.Individual):
-    genes: Any = None
-    model: Any = None
-    fitness: Any = None
-    loss: Any = None
-
-
-class BrkgaCNN(brkga.DefaultBRKGA):
-    def __init__(self, *args, model, MaxConv, MaxLinear, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.model = model
-        self.MaxConv = MaxConv
-        self.MaxLinear = MaxLinear
-
-    def create_single_individual(self, **kwargs) -> brkga.Individual:
-        lista_conv = createIndividualCNN(
-            in_feat_cnn, self.MaxConv
-        )  # Criar um cromossomo com genes convolucionais aleatórios
-        in_f = train_cnn(
-            lista_conv, val_loader, self.MaxConv
-        )  # Treinar a rede convolucional para saber a saída da última camada para ser a entrada da camada linear
-        lista_linear = createIndividualLinear(
-            D_out, self.MaxLinear, in_feat=in_f
-        )  # Criar um cromossomo com genes lineares, a partir da última camada convol.
-        # print(lista_conv, lista_linear)
-        genes = [lista_conv, lista_linear]
-        print("genes:", genes)
-        return CNNIndividual(genes=genes, model=self.model)
-
-    # Decoder
-    def calculate_fitness(self, ind, **fitness_args):
-        ind = decoder(ind, self.MaxConv, self.MaxLinear)
-        return ind.fitness
-
-
-in_feat_linear = 20  # Linear Layer Input Features.
-in_feat_cnn = 1  # Convolutional Layer Input Features.
-D_out = 10  # Output Features.
-MaxLinear = 2  # Maximum number of Linear Layers
-MaxConv = 2  # Maximum number of Convolutional Layers
-
-
-if __name__ == "__main__":
-    inicio = time()  # Contador inicial do tempo de resolução
-    SEED = 2021  # Semente fixada
-    model = []  # Model com as camadas
-    best_ind = None  # Melhor indivíduo
-
-    for i, j in zip(range(1, MaxLinear + 1), range(1, MaxConv + 1)):
-        cnn = BrkgaCNN(
-            pop_size=10,
-            mutant_size=0.3,
-            elite_size=0.3,
-            qtd_generations=5,
-            initial_seed=SEED,
-            rho_e=0.7,
-            maximize=False,
-            model=model,
-            MaxConv=i,
-            MaxLinear=j,
-        )
-        cnn.run()
-        best_ind = (
-            cnn.best_ind if best_ind is None else cnn.best(best_ind, cnn.best_ind)
-        )
-
-        print("Melhor Indivíduo Local para {} camada(s) oculta(s):".format(i))
-        print("Genes:", cnn.best_ind.genes)
-        print("Fitness:", cnn.best_ind.fitness)
-        print("Loss:", cnn.best_ind.loss)
-        print("Model:", cnn.best_ind.model)
-
-        # model = cnn.best_ind.model
-
-    print("\nMelhor Indivíduo:")
-    print("Genes:", best_ind.genes)
-    print("Fitness:", best_ind.fitness)
-    print("Loss:", best_ind.loss)
-    print("Model:", best_ind.model)
-
-    print("\nTraining time (in min) =", (time() - inicio) / 60)
