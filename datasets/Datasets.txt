@@ -1,0 +1,6 @@
+ISOLET dataset specifications:
+Examples: 7,797
+Features: 617
+Classes: 26
+More information: https://archive.ics.uci.edu/ml/datasets/isolet
+Download dataset in csv.: https://drive.google.com/file/d/1V5aoYodGCK-UE-TP-7rFxOl_RXKxWGEH/view?usp=sharing
